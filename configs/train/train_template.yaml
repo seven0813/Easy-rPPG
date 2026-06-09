@@ -1,0 +1,67 @@
+# Open-source PhysNet training template.
+# Run from the repository root:
+#   python run.py --config_file configs/train/train_template.yaml
+#
+# Each H5 list file should contain one H5 path per line. Relative H5 paths are
+# resolved relative to the directory containing the list file.
+
+name: physnet_train
+description: PhysNet training example
+trainer_type: PhysnetTrainer
+mode: train_and_test              # train_and_test or only_test
+
+device: cuda                     # Use cpu when CUDA is unavailable
+dist: false
+num_gpu: 1
+seed: 42
+
+train:
+  epochs: 30
+  lr: !!float 5.0e-4
+  use_last_epoch: false          # false: select the best checkpoint using val
+  plot_losses_and_lr: true
+
+inference:
+  pretrain_ckpt: ~               # Required only when mode is only_test
+  eval_level: clip_average       # video, clip, or clip_average
+
+datasets:
+  label_type: Raw
+  normalize: true
+  fs: 30
+  resize:
+    height: 128
+    width: 128
+
+  train:
+    name: train_set
+    dataset: PURE                # PURE, UBFC-rPPG, BUAA, or a custom name
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/train_h5_paths.txt
+    clip_length: 128
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+    shuffle: true
+
+  val:
+    name: val_set
+    dataset: PURE
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/val_h5_paths.txt
+    clip_length: 128
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+
+  test:
+    name: test_set
+    dataset: PURE
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/test_h5_paths.txt
+    clip_length: 360
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+
+path:
+  root: .
+  resume_state: ~                # Example: ./experiments/physnet_train/training_states/Epoch9.state
+  save_mp4_dir: ~

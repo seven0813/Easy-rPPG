@@ -1,0 +1,38 @@
+# Open-source PhysNet inference template.
+# Update pretrain_ckpt and h5_path before running:
+#   python run.py --config_file configs/infer/infer_template.yaml
+
+name: physnet_inference
+description: PhysNet inference example
+trainer_type: PhysnetTrainer
+mode: only_test
+
+device: cuda                     # Use cpu when CUDA is unavailable
+dist: false
+num_gpu: 1
+seed: 42
+
+inference:
+  pretrain_ckpt: ./pretrained_models/physnet.pth
+  eval_level: clip_average       # video, clip, or clip_average
+
+datasets:
+  label_type: Raw
+  normalize: true
+  fs: 30
+  resize:
+    height: 128
+    width: 128
+
+  test:
+    name: test_set
+    dataset: PURE                # PURE, UBFC-rPPG, BUAA, or a custom name
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/test_h5_paths.txt
+    clip_length: 360
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+
+path:
+  root: .
+  save_mp4_dir: ~
