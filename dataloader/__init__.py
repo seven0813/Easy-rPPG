@@ -105,7 +105,20 @@ def create_dataloader(dataset, dataset_opt, num_gpu=1, dist=False, sampler=None,
         raise ValueError(f'Wrong dataset phase: {phase}. '
                          "Supported ones are 'train', 'val' and 'test'.")
 
-    return torch.utils.data.DataLoader(**dataloader_args)
+    dataloader = torch.utils.data.DataLoader(**dataloader_args)
+    logger = get_root_logger()
+    logger.info(
+        '%s: dataset_len=%s, num_batches=%s, '
+        'batch_size=%s, num_workers=%s, shuffle=%s, drop_last=%s.',
+        dataset_opt['name'],
+        len(dataset),
+        len(dataloader),
+        dataloader_args['batch_size'],
+        dataloader_args['num_workers'],
+        dataloader_args.get('shuffle', False),
+        dataloader_args['drop_last'],
+    )
+    return dataloader
 
 
 def worker_init_fn(worker_id, num_workers, rank, seed):

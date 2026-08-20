@@ -55,3 +55,42 @@ def calculate_HR(signal: np.ndarray, fs=30, target="pulse", diff=False, detrend_
         idx = psd[:, mask.reshape(-1)].argmax(-1)
     phys = np.squeeze(freq[idx] * 60)
     return phys, signal
+
+
+def cal_metric_liang(
+    pred_phys: np.ndarray,
+    label_phys: np.ndarray,
+    methods=None,
+) -> list:
+    if methods is None:
+        methods = ["Mean", "Std", "MAE", "RMSE", "MAPE", "R"]
+    pred_phys = pred_phys.reshape(-1)
+    label_phys = label_phys.reshape(-1)
+    diff = pred_phys - label_phys
+    ret = [] * len(methods)
+    for m in methods:
+        if m == "Mean":
+            ret.append((diff).mean())
+        elif m == "Std":
+            ret.append((diff).std())
+        elif m == "MAE":
+            ret.append(np.abs(diff).mean())
+        elif m == "RMSE":
+            ret.append(np.sqrt((np.square(diff)).mean()))
+        elif m == "MAPE":
+            nonzero = np.abs(label_phys) > np.finfo(float).eps
+            ret.append(
+                np.mean(np.abs(diff[nonzero] / label_phys[nonzero])) * 100
+                if np.any(nonzero)
+                else np.nan
+            )
+        elif m == "R":
+            if (
+                len(pred_phys) < 2
+                or np.std(pred_phys) == 0
+                or np.std(label_phys) == 0
+            ):
+                ret.append(-1.0)
+            else:
+                ret.append(float(np.corrcoef(pred_phys, label_phys)[0, 1]))
+    return ret

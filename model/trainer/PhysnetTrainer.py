@@ -25,18 +25,18 @@ class PhysnetTrainer(BaseTrainer):
         self.fs = config.datasets.fs
         self.data_loader = data_loader
         self.config = config
-        
+
         self.logger = get_root_logger()
 
         self.setup_mode()
         self.resume_state()
-    
 
-    
+
+
     def setup_mode(self):
         if self.config.mode == "train_and_test":
             self.train_clip_length = self.config.datasets.train.clip_length
-            self.max_epoch_num = self.config.train.epochs 
+            self.max_epoch_num = self.config.train.epochs
             self.model_ckpt_dir = self.config.path.models
             self.training_state_dir = self.config.path.training_states
 
@@ -47,13 +47,13 @@ class PhysnetTrainer(BaseTrainer):
             self.num_train_batches = len(self.data_loader["train"])
             self.loss_model = Neg_Pearson()
             self.optimizer = optim.Adam(
-                self.model.parameters(), 
+                self.model.parameters(),
                 lr=self.config.train.lr)
 
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=self.config.train.lr, 
-                epochs=self.config.train.epochs, 
+                max_lr=self.config.train.lr,
+                epochs=self.config.train.epochs,
                 steps_per_epoch=self.num_train_batches)
             self.writer = SummaryWriter(log_dir=self.config.path.tensorboard)
 
@@ -77,25 +77,22 @@ class PhysnetTrainer(BaseTrainer):
             tbar = tqdm(data_loader["train"], dynamic_ncols=True)
             for idx, batch in enumerate(tbar):
                 tbar.set_description("Train epoch %s" % epoch)
-                
+
                 ## 0. prepare data
                 ### imgs:BCTHW [0-1]   bvp: BT [float32]
                 imgs = batch[0].to(torch.float32).to(self.device)
                 bvp = batch[1].to(torch.float32).to(self.device)
-                
-                print('imgs.shape', imgs.shape)
-                print('bvp.shape', bvp.shape)
-                
+                # print("imgs shape:", imgs.shape)
+
                 ## 1. forward
                 pred_bvp, _,_,_ = self.model(imgs)              ### pred_bvp: [B, T]
-                print('pred_bvp.shape', pred_bvp.shape)
                 pred_bvp = (pred_bvp - torch.mean(pred_bvp)) / torch.std(pred_bvp)  # normalize
-                bvp = (bvp - torch.mean(bvp)) / torch.std(bvp)  # normalize    
-                
+                bvp = (bvp - torch.mean(bvp)) / torch.std(bvp)  # normalize
+
                 ## 2. backward
                 loss = self.loss_model(pred_bvp, bvp)
                 loss.backward()
-                
+
                 # logging
                 train_loss.append(loss.item())
                 current_lr = self.scheduler.get_last_lr()[0]
@@ -117,13 +114,13 @@ class PhysnetTrainer(BaseTrainer):
             self.writer.add_scalar("train/loss_epoch", mean_train_loss, epoch)
 
             ## 如果 use_last_epoch = False，则进行验证选择 best model
-            if not self.config.train.use_last_epoch: 
+            if not self.config.train.use_last_epoch:
                 valid_loss = self.valid(data_loader)
                 mean_valid_losses.append(valid_loss)
-                
+
                 self.writer.add_scalar("valid/loss", valid_loss, epoch)
                 self.logger.info("validation loss: %s", valid_loss)
-                
+
                 if self.min_valid_loss is None:
                     self.min_valid_loss = valid_loss
                     self.best_epoch = epoch
@@ -132,19 +129,19 @@ class PhysnetTrainer(BaseTrainer):
                     self.min_valid_loss = valid_loss
                     self.best_epoch = epoch
                     self.logger.info("Update best model! Best epoch: %s", self.best_epoch)
-            
+
             self.save_model(epoch)
-        
-        if not self.config.train.use_last_epoch: 
+
+        if not self.config.train.use_last_epoch:
             self.logger.info(
                 "best trained epoch: %s, min_val_loss: %s",
                 self.best_epoch,
                 self.min_valid_loss,
             )
-            
+
         if self.config.train.plot_losses_and_lr:
             self.plot_losses_and_lrs(mean_training_losses, mean_valid_losses, lrs, self.config)
-    
+
         self.writer.close()
         self.writer = None
 
@@ -156,11 +153,11 @@ class PhysnetTrainer(BaseTrainer):
             vbar = tqdm(data_loader["val"], dynamic_ncols=True)
             for _, valid_batch in enumerate(vbar):
                 vbar.set_description("Validation")
-                
+
                 ## 0. prepare data
                 val_imgs = valid_batch[0].to(torch.float32).to(self.device)
                 val_bvp = valid_batch[1].to(torch.float32).to(self.device)
-                
+
                 ## 1. forward
                 pred_bvp, _,_,_ = self.model(val_imgs)
                 val_bvp = (val_bvp - torch.mean(val_bvp)) / torch.std(val_bvp)  # normalize
@@ -169,15 +166,15 @@ class PhysnetTrainer(BaseTrainer):
                 ## 2. calculate loss
                 loss_ecg = self.loss_model(val_bvp, pred_bvp)
                 valid_loss.append(loss_ecg.item())
-                
+
                 ## logging
                 vbar.set_postfix(loss=loss_ecg.item())
             valid_loss = np.asarray(valid_loss)
         return np.mean(valid_loss)
 
 
-    def test(self, data_loader):    
-        self.logger.info('')    
+    def test(self, data_loader):
+        self.logger.info('')
         self.logger.info("===Testing===")
         predictions = dict()
         labels = dict()
@@ -207,11 +204,11 @@ class PhysnetTrainer(BaseTrainer):
         self.logger.info("Running model evaluation on the testing dataset!")
         with torch.no_grad():
             for _, test_batch in enumerate(tqdm(data_loader["test"], dynamic_ncols=True)):
-                
+
                 test_imgs = test_batch[0].to(self.device)
                 batch_size = test_imgs.shape[0]
                 test_bvp = test_batch[1].to(self.device)
-                
+
                 pred_bvp,_,_,_ = self.model(test_imgs)
 
                 test_bvp = test_bvp.cpu()
@@ -226,20 +223,13 @@ class PhysnetTrainer(BaseTrainer):
                         labels[subj_index] = dict()
                     predictions[subj_index][sort_index] = pred_bvp[idx]
                     labels[subj_index][sort_index] = test_bvp[idx]
-                
-        ME, STD, MAE, RMSE, MER, P = calculate_metrics(predictions, labels, self.config)
-        self.logger.info(
-            "\n"
-            "ME:   %.4f\n"
-            "STD:  %.4f\n"
-            "MAE:  %.4f\n"
-            "RMSE: %.4f\n"
-            "MER:  %.4f\n"
-            "P:    %.4f",
-            ME, STD, MAE, RMSE, MER, P,
-            )        
-        self.save_test_outputs(predictions, labels, self.config)
+
+        self.logger.info('Eval method: %s', self.config.inference.eval_method)
+
+        metrics = calculate_metrics(predictions, labels, self.config)
+        self.log_test_metrics(metrics)
+        self.save_test_outputs(predictions, labels, self.config, metrics)
 
 
 
-    
+

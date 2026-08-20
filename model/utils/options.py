@@ -5,6 +5,7 @@
 # Copyright 2018-2020 BasicSR Authors
 # ------------------------------------------------------------------------
 import yaml
+from copy import deepcopy
 from collections import OrderedDict
 from os import path as osp
 from typing import Any
@@ -53,6 +54,12 @@ def get_dataset_phase(dataset_key: str) -> str | None:
     return None
 
 
+def root_has_output_dir(root: str) -> bool:
+    """Return whether root already points inside an output directory."""
+    root_parts = set(osp.normpath(root).split(osp.sep))
+    return bool({'experiments', 'results'} & root_parts)
+
+
 def ordered_yaml():
     """Support OrderedDict for yaml.
 
@@ -91,20 +98,30 @@ def parse(opt_path: str) -> AttrDict:
         Loader, _ = ordered_yaml()
         opt = yaml.load(f, Loader=Loader)
 
-    # datasets
-    ## 给dataset添加train/val/test的phase属性，方便后续使用
+    # 将 datasets 下的公共配置作为各 train/val/test 数据集的默认值。
+    # 数据集子配置中的同名字段优先，便于为某个 phase 单独覆盖。
     if 'datasets' in opt:
+        common_dataset_options = {
+            key: deepcopy(value)
+            for key, value in opt['datasets'].items()
+            if get_dataset_phase(key) is None
+        }
         for dataset_key, dataset in opt['datasets'].items():
             # for several datasets, e.g., test_1, test_2
             phase = get_dataset_phase(dataset_key)
             if phase is None:
                 continue
+            for key, value in common_dataset_options.items():
+                dataset.setdefault(key, deepcopy(value))
             dataset['phase'] = phase
 
     # paths
+    root = opt['path']['root']
     if opt['mode'] == 'train_and_test':
-        experiments_root = osp.join(opt['path']['root'], 'experiments',
-                                    opt['name'])
+        if root_has_output_dir(root):
+            experiments_root = osp.join(root, opt['name'])
+        else:
+            experiments_root = osp.join(root, 'experiments', opt['name'])
         opt['path']['experiments_root'] = experiments_root
         opt['path']['models'] = osp.join(experiments_root, 'models')
         opt['path']['training_states'] = osp.join(experiments_root,
@@ -115,7 +132,10 @@ def parse(opt_path: str) -> AttrDict:
         opt['path']['tensorboard'] = osp.join(experiments_root, 'tensorboard')
 
     else:  # test
-        results_root = osp.join(opt['path']['root'], 'results', opt['name'])
+        if root_has_output_dir(root):
+            results_root = osp.join(root, opt['name'])
+        else:
+            results_root = osp.join(root, 'results', opt['name'])
         opt['path']['results_root'] = results_root
         opt['path']['log'] = results_root
         opt['path']['visualization'] = osp.join(results_root, 'visualization')

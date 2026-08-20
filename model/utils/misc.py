@@ -7,6 +7,7 @@
 import numpy as np
 import os
 import random
+import shutil
 import time
 import torch
 from os import path as osp
@@ -53,6 +54,22 @@ def make_exp_dirs(opt):
         if path is None or key in {'root', 'vae_model'}:
             continue
         os.makedirs(path, exist_ok=True)
+
+
+@master_only
+def backup_config_file(config_file, opt):
+    """Copy the original config yaml into the experiment/result root."""
+    path_opt = opt['path']
+    if opt['mode'] == 'train_and_test':
+        output_root = path_opt['experiments_root']
+    else:
+        output_root = path_opt['results_root']
+
+    os.makedirs(output_root, exist_ok=True)
+    backup_path = osp.join(output_root, osp.basename(config_file))
+    if osp.abspath(config_file) != osp.abspath(backup_path):
+        shutil.copy2(config_file, backup_path)
+    return backup_path
 
 
 def scandir(dir_path, suffix=None, recursive=False, full_path=False):
@@ -147,7 +164,7 @@ def check_resume(opt, resume_iter):
         resume_iter (int): Resume iteration.
     """
     logger = get_root_logger()
-    if opt['path']['resume_state']:
+    if opt.get('train', {}).get('resume_state'):
         # get all the networks
         networks = [key for key in opt.keys() if key.startswith('network_')]
         flag_pretrain = False

@@ -130,7 +130,7 @@ def _calculate_SNR(pred_ppg_signal, hr_label, fs=30, low_pass=0.6, high_pass=3.3
         SNR = 0
     return SNR
 
-def calculate_HR(signal, fs, diff_flag=False, use_bandpass=True, hr_method='Peak'):
+def calculate_HR(signal, fs, diff_flag=False, use_bandpass=True, hr_method='FFT'):
     """Calculate video-level HR and SNR"""
     signal = np.asarray(signal)
     if signal.ndim == 2:

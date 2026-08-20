@@ -1,10 +1,10 @@
 from .logger import (MessageLogger, get_env_info, get_root_logger,
                      init_tb_logger, init_wandb_logger)
-from .misc import (check_resume, get_time_str, make_exp_dirs, mkdir_and_rename,
-                   scandir, scandir_SIDD, set_random_seed, sizeof_fmt)
+from .misc import (backup_config_file, check_resume, get_time_str,
+                   make_exp_dirs, mkdir_and_rename, scandir, scandir_SIDD,
+                   set_random_seed, sizeof_fmt)
 from .dist_util import get_dist_info
 from .options import parse, dict2str
-from .POS_torch import rppg_pos_torch
 
 __all__ = [
     # logger.py
@@ -16,6 +16,7 @@ __all__ = [
     
     # misc.py
     'set_random_seed',
+    'backup_config_file',
     'get_time_str',
     'mkdir_and_rename',
     'make_exp_dirs',

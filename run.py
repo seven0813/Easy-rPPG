@@ -10,7 +10,8 @@ import logging
 
 from model.trainer import create_trainer
 from dataloader import get_dataloader
-from model.utils import get_root_logger, parse, make_exp_dirs, get_time_str, dict2str, get_env_info
+from model.utils import (backup_config_file, get_root_logger, parse,
+                         make_exp_dirs, get_time_str, dict2str, get_env_info)
 
 
 def set_random_seed(seed):
@@ -45,16 +46,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
     config = parse(args.config_file)
     
-    resume_state = config.path.get('resume_state')
+    if config.mode == "train_and_test":
+        resume_state = config.train.get('resume_state')
+    else:
+        resume_state = None
     if resume_state:
         if not osp.isfile(resume_state):
             raise FileNotFoundError(f"Resume state does not exist: {resume_state}")
     else:
         make_exp_dirs(config)
+    config_backup_path = backup_config_file(args.config_file, config)
     set_random_seed(config.seed)
     logger = init_logger(config)
     
     logger.info('Loading config file from: {}'.format(args.config_file))
+    logger.info('Backed up config file to: {}'.format(config_backup_path))
+    logger.info(config.name)
     logger.info(f"Set random seed to {config.seed}")
     if resume_state:
         logger.info("Resume training state: %s", resume_state)

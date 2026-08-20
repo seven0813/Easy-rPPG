@@ -4,7 +4,76 @@ from pathlib import Path
 import h5py
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
+
+
+_TYPE_ALIASES = {
+    "raw": "Raw",
+    "standardized": "Standardized",
+    "diffnormalized": "DiffNormalized",
+}
+
+
+def canonicalize_signal_type(value, field_name):
+    """Return the canonical spelling of a data/label representation type."""
+    if not isinstance(value, str):
+        raise TypeError(
+            f"{field_name} must be a string, got {type(value).__name__}."
+        )
+    normalized = value.strip().replace("_", "").replace("-", "").lower()
+    canonical = _TYPE_ALIASES.get(normalized)
+    if canonical is None:
+        supported = ", ".join(_TYPE_ALIASES.values())
+        raise ValueError(
+            f"Unsupported {field_name} {value!r}. Supported: {supported}."
+        )
+    return canonical
+
+
+def canonicalize_data_types(value):
+    """Normalize a DATA_TYPE-style string/list while preserving channel order."""
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError("data_type must be a non-empty string or list of strings.")
+    return tuple(canonicalize_signal_type(item, "data_type") for item in value)
+
+
+def _standardize(tensor):
+    tensor = tensor - tensor.mean()
+    std = tensor.std(unbiased=False)
+    if not torch.isfinite(std) or std <= torch.finfo(tensor.dtype).eps:
+        return torch.zeros_like(tensor)
+    return tensor / std
+
+
+def _diff_normalize_frames(frames):
+    """Apply toolbox-style relative temporal differences to [T,C,H,W]."""
+    if frames.shape[0] < 2:
+        return torch.zeros_like(frames)
+    current = frames[:-1]
+    following = frames[1:]
+    differences = (following - current) / (following + current + 1e-7)
+    std = differences.std(unbiased=False)
+    if not torch.isfinite(std) or std <= torch.finfo(frames.dtype).eps:
+        differences = torch.zeros_like(differences)
+    else:
+        differences = differences / std
+    return torch.cat((differences, torch.zeros_like(frames[:1])), dim=0)
+
+
+def _diff_normalize_label(label):
+    """Apply first differences/std and append zero to preserve label length."""
+    if label.shape[0] < 2:
+        return torch.zeros_like(label)
+    differences = label[1:] - label[:-1]
+    std = differences.std(unbiased=False)
+    if not torch.isfinite(std) or std <= torch.finfo(label.dtype).eps:
+        differences = torch.zeros_like(differences)
+    else:
+        differences = differences / std
+    return torch.cat((differences, torch.zeros_like(label[:1])), dim=0)
 
 
 class BaseH5ClipDataset(Dataset):
@@ -17,7 +86,17 @@ class BaseH5ClipDataset(Dataset):
         self.img_key = config.get("img_key", "imgs")
         self.label_key = config.get("label_key", "bvp")
         self.normalize = config.get("normalize", True)
+        configured_data_type = config.get("data_type")
+        self.data_types = (
+            None
+            if configured_data_type is None
+            else canonicalize_data_types(configured_data_type)
+        )
+        self.label_type = canonicalize_signal_type(
+            config.get("label_type", "Raw"), "label_type"
+        )
         self.dataset = config.get("dataset", "unknown")
+        self.resize = self._parse_resize(config.get("resize"))
 
         if self.clip_length <= 0:
             raise ValueError("clip_length must be greater than 0.")
@@ -61,6 +140,20 @@ class BaseH5ClipDataset(Dataset):
             raise ValueError(f"H5 list file is empty: {list_path}")
         return paths
 
+    @staticmethod
+    def _parse_resize(resize):
+        """Parse YAML resize config and return (height, width), or None."""
+        if resize is None:
+            return None
+        height = resize.get("height", resize.get("h"))
+        width = resize.get("width", resize.get("w"))
+        if height is None or width is None:
+            raise ValueError("resize must define height/width or h/w.")
+        height, width = int(height), int(width)
+        if height <= 0 or width <= 0:
+            raise ValueError("resize height and width must be greater than 0.")
+        return height, width
+
     def _inspect_h5(self, h5_path):
         if not os.path.isfile(h5_path):
             raise FileNotFoundError(f"H5 file does not exist: {h5_path}")
@@ -98,6 +191,40 @@ class BaseH5ClipDataset(Dataset):
         frames = torch.from_numpy(np.asarray(frames, dtype=np.float32))
         if self.normalize:
             frames = frames / 255.0
-        frames = frames.permute(3, 0, 1, 2).contiguous()
+        frames = frames.permute(0, 3, 1, 2).contiguous()
+        if self.resize is not None and frames.shape[-2:] != self.resize:
+            frames = F.interpolate(
+                frames,
+                size=self.resize,
+                mode="bilinear",
+                align_corners=False,
+            )
+        frames = self._transform_frames(frames)
+        frames = frames.permute(1, 0, 2, 3).contiguous()
         label = torch.from_numpy(np.asarray(label, dtype=np.float32))
+        label = self._transform_label(label)
         return frames, label
+
+    def _transform_frames(self, frames):
+        """Apply configured representations and concatenate them by channel."""
+        if self.data_types is None:
+            return frames
+
+        transformed = []
+        for data_type in self.data_types:
+            if data_type == "Raw":
+                transformed.append(frames.clone())
+            elif data_type == "Standardized":
+                transformed.append(_standardize(frames))
+            elif data_type == "DiffNormalized":
+                transformed.append(_diff_normalize_frames(frames))
+        return torch.cat(transformed, dim=1)
+
+    def _transform_label(self, label):
+        if self.label_type == "Raw":
+            return label
+        if self.label_type == "Standardized":
+            return _standardize(label)
+        if self.label_type == "DiffNormalized":
+            return _diff_normalize_label(label)
+        raise AssertionError(f"Unhandled label_type: {self.label_type}")
