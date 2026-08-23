@@ -7,7 +7,7 @@ Easy-rPPG 是一个基于 PyTorch 的轻量级 rPPG 训练与推理框架，提�
 ## 主要功能
 
 - 统一的训练与推理入口
-- OpenFace 和 MediaPipe 两种预处理流程
+- OpenFace、MediaPipe 和 rPPG-Toolbox 三种预处理流程
 - H5 视频与 BVP 数据加载
 - Raw、Standardized、DiffNormalized 数据表示
 - video、window、window-average 多层级评测
@@ -38,6 +38,12 @@ pip install mediapipe
 
 使用 OpenFace 预处理时，需要另外安装 OpenFace，并准备 FeatureExtraction 可执行文件。
 
+使用 Toolbox 的 Y5F 后端时还需要与当前 PyTorch 版本匹配的 torchvision：
+
+~~~bash
+pip install torchvision pyyaml requests pillow
+~~~
+
 ## 数据预处理
 
 预处理脚本支持 PURE、UBFC-rPPG 和 BUAA。运行前请把 Bash 文件中的 /path/to/... 占位路径修改为本机路径。
@@ -66,7 +72,54 @@ bash preprocess/preprocess_openface.sh PURE
 - preprocess/preprocess_openface.sh
 - preprocess/script/preprocess_openface.py
 
-两个 Bash 脚本都会在预处理完成后调用 preprocess/script/genetate_h5_txt.py，生成 H5 路径清单。
+### rPPG-Toolbox 裁剪
+
+该入口迁移了 rPPG-Toolbox 的 Haar Cascade（HC）与 YOLO5Face（Y5F）
+人脸裁剪方式，当前支持 UBFC-rPPG 和 PURE。输出仍为 Easy-rPPG H5，
+不会生成 Toolbox 的分块 NPY 文件。
+
+先在 `preprocess/preprocess_toolbox.sh` 顶部修改数据路径和裁剪配置，再运行：
+
+~~~bash
+NUM_WORKERS=1 bash preprocess/preprocess_toolbox.sh UBFC-rPPG
+~~~
+
+默认配置对应 Toolbox 的 `CROP_FACE` 参数：
+
+~~~text
+DO_CROP_FACE: True
+BACKEND: HC
+USE_LARGE_FACE_BOX: True
+LARGE_BOX_COEF: 1.5
+DO_DYNAMIC_DETECTION: False
+DYNAMIC_DETECTION_FREQUENCY: 32
+USE_MEDIAN_FACE_BOX: False
+~~~
+
+所有参数也可以直接通过 Python CLI 覆盖。例如，使用 Y5F 每 32 帧检测一次，
+并对所有检测框取中位框：
+
+~~~bash
+python preprocess/script/preprocess_toolbox.py \
+    --dataset_name UBFC-rPPG \
+    --video_dir /path/to/data/UBFC-rPPG \
+    --json_dir /path/to/data/UBFC-rPPG \
+    --h5_dir /path/to/h5/UBFC-rPPG/toolbox \
+    --backend Y5F \
+    --do_dynamic_detection \
+    --dynamic_detection_frequency 32 \
+    --use_median_face_box \
+    --store_size 128
+~~~
+
+关闭人脸裁剪可使用 `--no-do_crop_face`；其他布尔参数同样提供
+`--no-...` 形式。Y5F 默认自动选择设备，也可使用 `--device cpu` 或
+`--device cuda:0`。入口文件：
+
+- preprocess/preprocess_toolbox.sh
+- preprocess/script/preprocess_toolbox.py
+
+三个 Bash 脚本都会在预处理完成后调用 preprocess/script/genetate_h5_txt.py，生成 H5 路径清单。
 
 生成的 H5 文件至少应包含：
 
@@ -156,7 +209,7 @@ Easy-rPPG/
 ├── dataloader/    # H5 Dataset 与 DataLoader
 ├── evaluate/      # 心率后处理和评测指标
 ├── model/         # 网络、损失、Trainer 和工具
-├── preprocess/    # OpenFace 与 MediaPipe 预处理
+├── preprocess/    # OpenFace、MediaPipe 与 Toolbox 预处理
 ├── run.py         # 统一入口
 ├── run.sh
 └── test.sh
@@ -169,4 +222,7 @@ Easy-rPPG/
 
 ## License
 
-项目根目录采用 MIT License。模型代码和数据集可能具有各自的许可证，使用前请确认对应条款。
+项目根目录采用 MIT License。Toolbox/Y5F 检测组件及权重的来源和 RAIL
+许可条款见 `preprocess/face_detector/NOTICE.md` 与
+`preprocess/face_detector/LICENSE-RAIL.txt`。模型代码和数据集也可能具有各自的
+许可证，使用前请确认对应条款。

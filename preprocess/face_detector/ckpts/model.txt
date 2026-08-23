@@ -1,0 +1,1 @@
+download from https://github.com/ubicomplab/rPPG-Toolbox/blob/main/dataset/data_loader/face_detector/ckpts/Y5sF_WFRGB.pth
