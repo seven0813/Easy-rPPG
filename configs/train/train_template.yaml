@@ -18,6 +18,9 @@ seed: 42
 train:
   epochs: 30
   lr: !!float 5.0e-4
+  # Optional PhysNet protocol mode: intra, cross, or both. When enabled,
+  # replace datasets.val/test below with datasets.test_intra/test_cross.
+  # test_protocols: [intra, cross]
   use_last_epoch: false          # false: select the best checkpoint using val
   plot_losses_and_lr: true
   save_model_frequency: 1

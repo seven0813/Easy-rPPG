@@ -16,6 +16,8 @@ from tqdm import tqdm
 
 class PhysnetTrainer(BaseTrainer):
 
+    SUPPORTED_TEST_PROTOCOLS = ("intra", "cross")
+
     def __init__(self, config, data_loader):
         """Inits parameters from args and the writer for TensorboardX."""
         super().__init__()
@@ -25,16 +27,93 @@ class PhysnetTrainer(BaseTrainer):
         self.fs = config.datasets.fs
         self.data_loader = data_loader
         self.config = config
-
         self.logger = get_root_logger()
+        self.test_protocols = self._resolve_test_protocols()
 
         self.setup_mode()
         self.resume_state()
 
+    def _resolve_test_protocols(self):
+        """Validate the optional train.test_protocols protocol list."""
+        if self.config.mode != "train_and_test":
+            return None
+
+        configured = self.config.train.get("test_protocols")
+        if configured is None:
+            return None
+        if not isinstance(configured, (list, tuple)):
+            raise TypeError("train.test_protocols must be a non-empty list")
+        if not configured:
+            raise ValueError("train.test_protocols must not be empty")
+
+        protocols = []
+        for value in configured:
+            if not isinstance(value, str):
+                raise TypeError("Each train.test_protocols item must be a string")
+            protocol = value.strip().lower()
+            if protocol not in self.SUPPORTED_TEST_PROTOCOLS:
+                supported = ", ".join(self.SUPPORTED_TEST_PROTOCOLS)
+                raise ValueError(
+                    f"Unsupported test protocol {value!r}. Supported: {supported}"
+                )
+            if protocol in protocols:
+                raise ValueError(
+                    f"train.test_protocols contains duplicate protocol {protocol!r}"
+                )
+            protocols.append(protocol)
+        return tuple(protocols)
+
+    @property
+    def uses_protocol_mode(self):
+        return self.test_protocols is not None
+
+    @property
+    def uses_validation(self):
+        if self.uses_protocol_mode:
+            return "cross" in self.test_protocols
+        return not self.config.train.use_last_epoch
+
+    def _validate_protocol_datasets(self):
+        if not self.uses_protocol_mode:
+            return
+        required = {"train", "test_intra"}
+        if "cross" in self.test_protocols:
+            required.add("test_cross")
+        missing = sorted(required.difference(self.data_loader))
+        if missing:
+            raise ValueError(
+                "train.test_protocols requires dataset loaders: "
+                f"{', '.join(missing)}"
+            )
+
+    def _validation_loader(self, data_loader):
+        if not self.uses_validation:
+            return None
+        dataset_key = "test_intra" if self.uses_protocol_mode else "val"
+        if dataset_key not in data_loader:
+            raise ValueError(
+                f"Validation requires dataset loader {dataset_key!r}"
+            )
+        return data_loader[dataset_key]
+
+    def _update_best_model(self, valid_loss, epoch):
+        if (
+            self.min_valid_loss is not None
+            and valid_loss >= self.min_valid_loss
+        ):
+            return False
+        self.min_valid_loss = valid_loss
+        self.best_epoch = epoch
+        self.logger.info(
+            "Update best model! Best epoch: %s", self.best_epoch
+        )
+        self.save_best_model(epoch)
+        return True
 
 
     def setup_mode(self):
         if self.config.mode == "train_and_test":
+            self._validate_protocol_datasets()
             self.train_clip_length = self.config.datasets.train.clip_length
             self.max_epoch_num = self.config.train.epochs
             self.model_ckpt_dir = self.config.path.models
@@ -69,6 +148,7 @@ class PhysnetTrainer(BaseTrainer):
         mean_training_losses = []
         mean_valid_losses = []
         lrs = []
+        validation_loader = self._validation_loader(data_loader)
         for epoch in range(self.start_epoch, self.max_epoch_num):
             self.logger.info('')
             self.logger.info("====Training Epoch: %s====", epoch)
@@ -113,26 +193,18 @@ class PhysnetTrainer(BaseTrainer):
             mean_training_losses.append(mean_train_loss)
             self.writer.add_scalar("train/loss_epoch", mean_train_loss, epoch)
 
-            ## 如果 use_last_epoch = False，则进行验证选择 best model
-            if not self.config.train.use_last_epoch:
-                valid_loss = self.valid(data_loader)
+            if validation_loader is not None:
+                valid_loss = self.valid(validation_loader)
                 mean_valid_losses.append(valid_loss)
 
                 self.writer.add_scalar("valid/loss", valid_loss, epoch)
                 self.logger.info("validation loss: %s", valid_loss)
 
-                if self.min_valid_loss is None:
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    self.logger.info("Update best model! Best epoch: %s", self.best_epoch)
-                elif (valid_loss < self.min_valid_loss):
-                    self.min_valid_loss = valid_loss
-                    self.best_epoch = epoch
-                    self.logger.info("Update best model! Best epoch: %s", self.best_epoch)
+                self._update_best_model(valid_loss, epoch)
 
             self.save_model(epoch)
 
-        if not self.config.train.use_last_epoch:
+        if self.uses_validation:
             self.logger.info(
                 "best trained epoch: %s, min_val_loss: %s",
                 self.best_epoch,
@@ -145,12 +217,12 @@ class PhysnetTrainer(BaseTrainer):
         self.writer.close()
         self.writer = None
 
-    def valid(self, data_loader):
+    def valid(self, valid_loader):
         self.logger.info("====Validating====")
         valid_loss = []
         self.model.eval()
         with torch.no_grad():
-            vbar = tqdm(data_loader["val"], dynamic_ncols=True)
+            vbar = tqdm(valid_loader, dynamic_ncols=True)
             for _, valid_batch in enumerate(vbar):
                 vbar.set_description("Validation")
 
@@ -173,63 +245,126 @@ class PhysnetTrainer(BaseTrainer):
         return np.mean(valid_loss)
 
 
-    def test(self, data_loader):
-        self.logger.info('')
-        self.logger.info("===Testing===")
-        predictions = dict()
-        labels = dict()
+    def _checkpoint_path(self, checkpoint_name):
+        if checkpoint_name not in {"latest", "best"}:
+            raise ValueError(
+                "checkpoint_name must be either 'latest' or 'best'"
+            )
+        return os.path.join(self.model_ckpt_dir, f"{checkpoint_name}.pth")
 
-        if self.config.mode == "only_test":
-            if not os.path.exists(self.pretrain_ckpt):
-                raise ValueError("Inference model path error! Please check inference.pretrain_ckpt in your yaml.")
-            self.model.load_state_dict(torch.load(self.pretrain_ckpt))
-            self.logger.info("Testing uses pretrained model: %s", self.pretrain_ckpt)
-        else:
-            ##! test_dataloader的clip_length可以和train/val不一样
-            test_clip_length = self.config.datasets.test.clip_length
-            if test_clip_length != self.train_clip_length:
-                self.model.poolspa = torch.nn.AdaptiveAvgPool3d((test_clip_length, 1, 1)).to(self.device)
-                self.logger.info("Test clip length changed to: %s", test_clip_length)
-            if self.config.train.use_last_epoch:
-                last_epoch_model_path = os.path.join(self.model_ckpt_dir, f"Epoch{self.max_epoch_num - 1}.pth")
-                self.logger.info("Testing uses last epoch ckpt: %s",last_epoch_model_path)
-                self.model.load_state_dict(torch.load(last_epoch_model_path))
-            else:
-                best_model_path = os.path.join(self.model_ckpt_dir, f"Epoch{self.best_epoch}.pth")
-                self.logger.info("Testing uses best epoch selected using model selection: %s",best_model_path,)
-                self.model.load_state_dict(torch.load(best_model_path))
-
+    def _load_test_checkpoint(self, checkpoint_path, checkpoint_label):
+        if not checkpoint_path or not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(
+                f"PhysNet {checkpoint_label} checkpoint does not exist: "
+                f"{checkpoint_path}"
+            )
+        state_dict = torch.load(checkpoint_path, map_location=self.device)
+        self.model.load_state_dict(state_dict)
         self.model = self.model.to(self.device)
+        self.logger.info(
+            "Testing uses %s checkpoint: %s",
+            checkpoint_label,
+            checkpoint_path,
+        )
+
+    def _test_once(
+        self,
+        test_loader,
+        dataset_key,
+        checkpoint_path,
+        checkpoint_label,
+        protocol_label,
+        output_filename="outputs.pickle",
+    ):
+        self.logger.info("")
+        self.logger.info(
+            "===Testing protocol=%s dataset=%s checkpoint=%s===",
+            protocol_label,
+            dataset_key,
+            checkpoint_label,
+        )
+        self._load_test_checkpoint(checkpoint_path, checkpoint_label)
+
+        predictions = {}
+        labels = {}
         self.model.eval()
-        self.logger.info("Running model evaluation on the testing dataset!")
         with torch.no_grad():
-            for _, test_batch in enumerate(tqdm(data_loader["test"], dynamic_ncols=True)):
-
-                test_imgs = test_batch[0].to(self.device)
-                batch_size = test_imgs.shape[0]
+            for test_batch in tqdm(test_loader, dynamic_ncols=True):
+                test_imgs = test_batch[0].to(
+                    self.device, dtype=torch.float32
+                )
                 test_bvp = test_batch[1].to(self.device)
-
-                pred_bvp,_,_,_ = self.model(test_imgs)
+                pred_bvp, _, _, _ = self.model(test_imgs)
 
                 test_bvp = test_bvp.cpu()
                 pred_bvp = pred_bvp.cpu()
+                for index in range(test_imgs.shape[0]):
+                    subject = test_batch[2][index]
+                    clip_index = int(test_batch[3][index])
+                    predictions.setdefault(subject, {})[clip_index] = pred_bvp[
+                        index
+                    ]
+                    labels.setdefault(subject, {})[clip_index] = test_bvp[index]
 
-                ## 把同一个 subject 的不同 clip 的预测结果和标签放在一起，方便后续计算指标
-                for idx in range(batch_size):
-                    subj_index = test_batch[2][idx]
-                    sort_index = int(test_batch[3][idx])
-                    if subj_index not in predictions.keys():
-                        predictions[subj_index] = dict()
-                        labels[subj_index] = dict()
-                    predictions[subj_index][sort_index] = pred_bvp[idx]
-                    labels[subj_index][sort_index] = test_bvp[idx]
-
-        self.logger.info('Eval method: %s', self.config.inference.eval_method)
-
+        self.logger.info(
+            "Evaluation protocol=%s, method=%s",
+            protocol_label,
+            self.config.inference.eval_method,
+        )
         metrics = calculate_metrics(predictions, labels, self.config)
         self.log_test_metrics(metrics)
-        self.save_test_outputs(predictions, labels, self.config, metrics)
+        self.save_test_outputs(
+            predictions,
+            labels,
+            self.config,
+            metrics,
+            output_filename=output_filename,
+        )
+        return metrics
 
+    def test(self, data_loader):
+        if self.config.mode == "only_test":
+            return self._test_once(
+                data_loader["test"],
+                "test",
+                self.pretrain_ckpt,
+                "pretrained",
+                "only_test",
+            )
 
+        if not self.uses_protocol_mode:
+            checkpoint_name = (
+                "latest" if self.config.train.use_last_epoch else "best"
+            )
+            return self._test_once(
+                data_loader["test"],
+                "test",
+                self._checkpoint_path(checkpoint_name),
+                checkpoint_name,
+                "legacy",
+            )
+
+        results = {}
+        combined = len(self.test_protocols) == 2
+        if "intra" in self.test_protocols:
+            results["intra"] = self._test_once(
+                data_loader["test_intra"],
+                "test_intra",
+                self._checkpoint_path("latest"),
+                "latest",
+                "intra",
+                output_filename=(
+                    "outputs_intra.pickle" if combined else "outputs.pickle"
+                ),
+            )
+        if "cross" in self.test_protocols:
+            results["cross"] = self._test_once(
+                data_loader["test_cross"],
+                "test_cross",
+                self._checkpoint_path("best"),
+                "best",
+                "cross",
+            )
+        return results
 
 

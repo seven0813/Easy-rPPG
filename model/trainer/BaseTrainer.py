@@ -125,6 +125,7 @@ class BaseTrainer:
         labels,
         config,
         metrics_by_level=None,
+        output_filename='outputs.pickle',
     ):
 
         if config.mode == 'train_and_test':
@@ -133,7 +134,7 @@ class BaseTrainer:
             output_dir = config.path.results_root
         else:
             raise ValueError('Metrics.py evaluation only supports train_and_test and only_test!')
-        output_path = os.path.join(output_dir, 'outputs.pickle')
+        output_path = os.path.join(output_dir, output_filename)
 
         data = dict()
         data['predictions'] = predictions

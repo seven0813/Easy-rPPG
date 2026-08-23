@@ -61,12 +61,36 @@ num_gpu: 0
 | --- | --- | --- | --- |
 | `epochs` | int | 是 | 总训练 epoch 数。恢复训练时仍表示最终总 epoch 数，而不是额外训练轮数。 |
 | `lr` | float | 是 | Adam 优化器学习率，同时作为 OneCycleLR 的最大学习率。推荐写成 `!!float 5.0e-4`。 |
-| `use_last_epoch` | bool | 是 | `true`：训练结束后使用最后一个 epoch 测试；`false`：根据验证损失选择最佳 epoch。 |
+| `use_last_epoch` | bool | legacy 模式必需 | 未配置 `test_protocols` 时，`true` 使用最后一个 epoch 测试，`false` 根据验证损失选择最佳 epoch。协议模式不使用该字段。 |
+| `test_protocols` | list[string] | 否 | 启用 PhysNet 协议模式；支持 `intra`、`cross`，可配置一个或同时配置两个。协议名不区分大小写，但不允许重复。 |
 | `plot_losses_and_lr` | bool | 是 | 是否输出训练/验证损失曲线、学习率曲线和 CSV 日志。 |
 | `save_model_frequency` | int | 否 | 保留带编号 `EpochN` checkpoint 的周期，默认 `1`；必须大于 `0`。每个 epoch 都会覆盖保存 `latest`，最后一个 epoch 始终额外保留。 |
 | `resume_state` | string/null | 否 | 恢复训练使用的 `.state` 文件。未恢复时设为 `~`。只使用该最新字段，不使用 `path.resume_state`。 |
 
-当 `use_last_epoch: false` 时，必须提供 `datasets.val`；当其为 `true` 时，可以不配置验证集。
+未配置 `test_protocols` 时为 legacy 模式：`use_last_epoch: false` 必须提供
+`datasets.val`，为 `true` 时可以不配置验证集。
+
+协议模式示例：
+
+```yaml
+train:
+  epochs: 30
+  lr: !!float 5.0e-4
+  test_protocols: [intra, cross]
+  plot_losses_and_lr: true
+  save_model_frequency: 1
+  resume_state: ~
+```
+
+- `intra`：使用 `latest.pth` 在 `datasets.test_intra` 上测试。
+- `cross`：训练期间使用 `datasets.test_intra` 选择 `best.pth`，训练结束后在
+  `datasets.test_cross` 上测试。
+- 同时启用时固定先执行 intra，再执行 cross。
+
+训练模板中的 `test_protocols` 默认保持注释，因此模板仍使用 legacy 模式。启用
+协议模式时取消该行注释，并按协议将模板中的 `datasets.val/test` 改为
+`datasets.test_intra/test_cross`。协议模式由 `test_protocols` 决定 checkpoint
+选择，`use_last_epoch` 不参与协议调度，可以从配置中删除。
 
 恢复训练示例：
 
@@ -255,6 +279,7 @@ experiments/<name>/
 ├── training_states/
 ├── tensorboard/
 ├── visualization/
+├── outputs_intra.pickle  # 仅同时启用 intra 和 cross 时生成
 ├── outputs.pickle
 └── <name>_<时间戳>.log
 ```
@@ -282,9 +307,47 @@ results/<name>/
 mode: train_and_test
 ```
 
-- 必须配置 `datasets.train` 和 `datasets.test`。
-- `train.use_last_epoch: false` 时还必须配置 `datasets.val`。
+- legacy 模式必须配置 `datasets.train` 和 `datasets.test`。
+- legacy 模式下，`train.use_last_epoch: false` 时还必须配置 `datasets.val`。
+- 协议模式必须配置 `datasets.train` 和 `datasets.test_intra`。
+- 协议模式启用 `cross` 时还必须配置 `datasets.test_cross`。
 - `inference.pretrain_ckpt` 通常设为 `~`。
+
+同时执行 intra 和 cross 的数据集配置示例：
+
+```yaml
+train:
+  test_protocols: [intra, cross]
+
+datasets:
+  clip_length: 128
+
+  train:
+    name: train_set
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/train_h5_paths.txt
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+    shuffle: true
+
+  test_intra:
+    name: same_domain_test
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/test_intra_h5_paths.txt
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+
+  test_cross:
+    name: cross_domain_test
+    type: H5ClipOrderDataset
+    h5_path: ./dataset/test_cross_h5_paths.txt
+    batch_size_per_gpu: 2
+    num_workers_per_gpu: 4
+```
+
+所有训练和测试数据集必须使用相同的 `clip_length`。仅启用单个协议时结果写入
+`outputs.pickle`；同时启用时 intra 写入 `outputs_intra.pickle`，cross 写入
+`outputs.pickle`。
 
 ### 8.2 仅测试
 
